@@ -14,6 +14,21 @@ use sl651_protocol::{scan, Scanned};
 use crate::mqtt::TbSink;
 use crate::session::Sessions;
 
+const RAW_LOG_LIMIT: usize = 1024;
+
+fn hex_preview(data: &[u8]) -> String {
+    let shown = data.len().min(RAW_LOG_LIMIT);
+    let mut out = data[..shown]
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if data.len() > shown {
+        out.push_str(" ...");
+    }
+    out
+}
+
 /// 运行 TCP 接入直至监听器失效。
 pub async fn run_tcp(listener: TcpListener, sessions: Arc<Sessions>, sink: Arc<dyn TbSink>) {
     let local = listener.local_addr().map(|a| a.to_string()).unwrap_or_default();
@@ -60,7 +75,7 @@ async fn handle_conn(
         };
         acc.extend_from_slice(&chunk[..n]);
         if acc.len() > max_buf {
-            warn!(peer = %peer, "累积缓冲超限, 清空 {} 字节", acc.len());
+            warn!(peer = %peer, raw_len = acc.len(), raw_hex = %hex_preview(&acc), "累积缓冲超限, 清空 {} 字节", acc.len());
             acc.clear();
             continue;
         }
@@ -76,7 +91,12 @@ async fn handle_conn(
                 }
                 Scanned::NeedMore => break,
                 Scanned::Skip { skip, reason, partial } => {
-                    warn!(peer = %peer, "丢弃损坏数据 {skip} 字节: {reason}");
+                    warn!(
+                        peer = %peer,
+                        raw_len = acc.len(),
+                        raw_hex = %hex_preview(&acc),
+                        "丢弃损坏数据 {skip} 字节: {reason}"
+                    );
                     let nak = sessions.handle_corrupt(partial, &reason.to_string());
                     if let Some(a) = nak {
                         stream.write_all(&a).await.ok();
@@ -115,7 +135,12 @@ pub async fn run_udp(socket: Arc<UdpSocket>, sessions: Arc<Sessions>, sink: Arc<
                             }
                             Scanned::NeedMore => break,
                             Scanned::Skip { skip, reason, partial } => {
-                                warn!(peer = %peer.to_string(), "丢弃损坏数据 {skip} 字节: {reason}");
+                                warn!(
+                                    peer = %peer.to_string(),
+                                    raw_len = pending.len(),
+                                    raw_hex = %hex_preview(&pending),
+                                    "丢弃损坏数据 {skip} 字节: {reason}"
+                                );
                                 let nak = sessions.handle_corrupt(partial, &reason.to_string());
                                 if let Some(a) = nak {
                                     sock.send_to(&a, peer).await.ok();
