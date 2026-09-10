@@ -653,18 +653,24 @@ fn parse_hex_elements(mut rest: &[u8]) -> Result<Content> {
     }))
 }
 
-/// 数据定义字节: 高5位=数据字节数(不含符号字节), 低3位=小数位数。
-/// 负数: 数据首字节 FF 后跟 BCD 数字 (§6.6.3.3)。
+/// 数据定义字节: 高5位=数据字节数(包含符号位), 低3位=小数位数。
+/// BCD 数据最高位字节 FF 表示负数；数据字段全 FF 按缺测处理 (§6.6.3.3)。
 fn parse_def_data(def: u8, data: &[u8]) -> Result<(Value, usize)> {
     let nbytes = (def >> 3) as usize;
     let decimals = (def & 0x07) as u32;
     if data.len() < nbytes {
         return Err(Error::TooShort { need: nbytes, have: data.len() });
     }
-    let (neg, digits_bytes, consumed) = if nbytes > 0 && data[0] == 0xFF {
-        (true, &data[1..1 + nbytes], nbytes + 1)
+
+    let field = &data[..nbytes];
+    if nbytes > 0 && field.iter().all(|&b| b == 0xFF) {
+        return Ok((Value::Missing, nbytes));
+    }
+
+    let (neg, digits_bytes) = if nbytes > 0 && field[0] == 0xFF {
+        (true, &field[1..])
     } else {
-        (false, &data[..nbytes], nbytes)
+        (false, field)
     };
     let digits = bcd_to_digits(digits_bytes).unwrap_or_default();
     let mag: f64 = if digits.is_empty() { 0.0 } else { digits.parse::<f64>().unwrap_or(0.0) };
@@ -675,7 +681,7 @@ fn parse_def_data(def: u8, data: &[u8]) -> Result<(Value, usize)> {
         let f = mag / 10f64.powi(decimals as i32);
         Value::Float(if neg { -f } else { f })
     };
-    Ok((v, consumed))
+    Ok((v, nbytes))
 }
 
 #[cfg(test)]
@@ -823,12 +829,36 @@ mod tests {
 
     #[test]
     fn hex_negative_value() {
-        // Z 值 -1.23: FF + 0123 (4位数字, 2位小数), def = (2<<3)|2 = 0x12
+        // Z 值 -1.23: FF + 0123 共 3 字节且包含符号位, def = (3<<3)|2 = 0x1A
         let mut raw = vec![0x00, 0x02, 0x26, 0x09, 0x09, 0x08, 0x00, 0x00];
-        raw.extend_from_slice(&[0x39, 0x12, 0xFF, 0x01, 0x23]);
+        raw.extend_from_slice(&[0x39, 0x1A, 0xFF, 0x01, 0x23]);
         let b = parse_body(0x32, &raw, Encoding::Hex).unwrap();
         let Content::Elements(e) = &b.content else { panic!() };
         assert_eq!(e.elements[0].value, Value::Float(-1.23));
+    }
+
+    #[test]
+    fn hex_hourly_missing_value_keeps_following_fields_aligned() {
+        // 现场 34H 正文: Z=FFFFFFFF 缺测，后续 VT / 7A / FFA0 仍应按原字段边界解析。
+        let raw: Vec<u8> = "01 50 26 09 10 17 00 45 F1 F1 00 26 09 08 01 48 F0 F0 26 09 10 16 05 F4 60 FF FF FF FF FF FF FF FF FF 00 00 00 F0 F0 26 09 10 17 00 26 19 00 00 15 F0 F0 26 09 10 16 05 F5 C0 FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF F0 F0 26 09 10 17 00 1A 19 00 00 00 20 19 00 00 00 39 23 FF FF FF FF 38 12 12 07 7A 08 31 FF A0 11 03 07"
+            .split_whitespace()
+            .map(|pair| u8::from_str_radix(pair, 16).unwrap())
+            .collect();
+        assert_eq!(raw.len(), 117);
+
+        let b = parse_body(0x34, &raw, Encoding::Hex).unwrap();
+        let Content::Elements(e) = &b.content else { panic!() };
+        assert_eq!(e.station_addr.as_deref(), Some("0026090801"));
+        assert_eq!(e.station_class, Some('H'));
+        assert_eq!(e.elements.len(), 9);
+        assert_eq!(e.elements[5].ident, "Z");
+        assert_eq!(e.elements[5].value, Value::Missing);
+        assert_eq!(e.elements[6].ident, "VT");
+        assert_eq!(e.elements[6].value, Value::Float(12.07));
+        assert_eq!(e.elements[7].ident, "7A");
+        assert_eq!(e.elements[7].value, Value::Int(31));
+        assert_eq!(e.elements[8].ident, "FFA0");
+        assert_eq!(e.elements[8].value, Value::Float(30.7));
     }
 
     #[test]
