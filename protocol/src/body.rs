@@ -126,7 +126,7 @@ pub enum Value {
     HourlyRain(Vec<Option<f64>>),
     /// DRZ1..8: 12 组 5 分钟间隔相对水位 (米), None=FFFF 非法
     HourlyLevel(Vec<Option<f64>>),
-    /// 缺测 (ASCII 'M' / HEX 'F')
+    /// 缺测 (ASCII 'M' / HEX 数据位全 F)
     Missing,
 }
 
@@ -173,7 +173,7 @@ impl<'a> Lexer<'a> {
         probe.next_token()
     }
 
-    /// 当前位置之后的原始剩余字节 (用于 PIC/RGZS 原编码数据)。
+    /// 当前位置之后的原始剩余字节 (用于 PIC/RGZS)。
     fn remainder(&self) -> &'a [u8] {
         &self.buf[self.pos.min(self.buf.len())..]
     }
@@ -205,7 +205,6 @@ fn parse_manual(rest: &[u8]) -> Result<ManualBody> {
         return Err(Error::BadBody("人工置数缺少 RGZS 标识符".into()));
     }
     let mut data = &rest[5..];
-    // 去掉强制尾随空格
     if data.last() == Some(&b' ') {
         data = &data[..data.len() - 1];
     }
@@ -234,7 +233,6 @@ fn parse_image(rest: &[u8]) -> Result<ImageBody> {
                 }
             }
             b"PIC" => {
-                // 其后全部为 JPG 原编码数据 (可含空格等任意字节), 去掉一个尾随空格
                 let mut data = lex.remainder().to_vec();
                 if data.last() == Some(&b' ') {
                     data.pop();
@@ -263,7 +261,6 @@ fn parse_elements(rest: &[u8]) -> Result<Content> {
     let mut obs_time = None;
     let mut elements: Vec<Element> = Vec::new();
 
-    // 均匀时段 (见到步长码后切换)
     let mut step: Option<Step> = None;
     let mut u_idents: Vec<String> = Vec::new();
     let mut u_values: Vec<Value> = Vec::new();
@@ -293,7 +290,6 @@ fn parse_elements(rest: &[u8]) -> Result<Content> {
                 }
             }
             "RGZS" => {
-                // 个别设备把人工置数混编进要素报文, 宽容处理
                 let mut data = lex.remainder().to_vec();
                 if data.last() == Some(&b' ') {
                     data.pop();
@@ -321,7 +317,6 @@ fn parse_elements(rest: &[u8]) -> Result<Content> {
                     step = Some(st);
                     continue;
                 }
-                // ST 站址之后、TT 之前的单字符为遥测站分类码 (附录A)
                 if s.len() == 1
                     && is_class_char(s.chars().next().unwrap())
                     && lex.peek_token() == Some(&b"TT"[..])
@@ -342,18 +337,14 @@ fn parse_elements(rest: &[u8]) -> Result<Content> {
                     }
                 }
                 match &step {
-                    None => {
-                        // 定时报式: 标识符 + 数据 成对
-                        match lex.next_token() {
-                            Some(v) => {
-                                let value = parse_value(&s, v);
-                                elements.push(Element { ident: s, value });
-                            }
-                            None => break, // 尾部孤立标识符
+                    None => match lex.next_token() {
+                        Some(v) => {
+                            let value = parse_value(&s, v);
+                            elements.push(Element { ident: s, value });
                         }
-                    }
+                        None => break,
+                    },
                     Some(_) => {
-                        // 均匀时段: 要素标识符序列在前, 之后是纯数据流 (表30)
                         if looks_like_value(tok) {
                             u_values.push(parse_value("", tok));
                         } else {
@@ -368,7 +359,6 @@ fn parse_elements(rest: &[u8]) -> Result<Content> {
     match step {
         Some(step) => {
             let groups: Vec<Vec<Value>> = if step == Step::HourlyBlocks {
-                // DRP/DRZ 固定搭配: 值本身即整组数据, 不再切分
                 if u_values.is_empty() { Vec::new() } else { vec![u_values] }
             } else {
                 let n = u_idents.len().max(1);
@@ -392,7 +382,6 @@ fn parse_elements(rest: &[u8]) -> Result<Content> {
     }
 }
 
-/// 判断 token 是否为数据 (数值/缺测), 用于均匀时段要素表与数据流的区分。
 fn looks_like_value(tok: &[u8]) -> bool {
     if tok == b"M" || tok == b"F" {
         return true;
@@ -402,7 +391,6 @@ fn looks_like_value(tok: &[u8]) -> bool {
     !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit() || b == b'.')
 }
 
-/// DRDnn / DRHnn / DRNnn (表C.2)。
 fn parse_step_token(s: &str) -> Option<Step> {
     let b = s.as_bytes();
     if b.len() != 5 || &b[0..2] != b"DR" {
@@ -418,7 +406,6 @@ fn parse_step_token(s: &str) -> Option<Step> {
     }
 }
 
-/// DRP: 12 字节 HEX 的 ASCII 化 (24 个十六进制字符), 每字节 0.1 毫米。
 fn parse_hourly_rain(tok: &[u8]) -> Result<Value> {
     let s = String::from_utf8_lossy(tok);
     let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
@@ -434,7 +421,6 @@ fn parse_hourly_rain(tok: &[u8]) -> Result<Value> {
     Ok(Value::HourlyRain(vals))
 }
 
-/// DRZ1..8: 24 字节 HEX 的 ASCII 化 (48 个十六进制字符), 每组 2 字节, 分辨力厘米。
 fn parse_hourly_level(ident: &str, tok: &[u8]) -> Result<Value> {
     let s = String::from_utf8_lossy(tok);
     let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
@@ -450,14 +436,12 @@ fn parse_hourly_level(ident: &str, tok: &[u8]) -> Result<Value> {
     Ok(Value::HourlyLevel(vals))
 }
 
-/// 普通要素值解析。ident 仅影响 ZT 特判。
 fn parse_value(ident: &str, tok: &[u8]) -> Value {
     let s = String::from_utf8_lossy(tok).into_owned();
     if s == "M" || s == "F" {
         return Value::Missing;
     }
     if ident == "ZT" {
-        // 4 字节 HEX 的 ASCII 化; 宽容十进制
         if let Ok(v) = u32::from_str_radix(&s, 16) {
             return Value::Status(v);
         }
@@ -468,7 +452,11 @@ fn parse_value(ident: &str, tok: &[u8]) -> Value {
     }
     let t = s.trim_start_matches('-');
     let dots = t.bytes().filter(|&b| b == b'.').count();
-    if !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit() || b == b'.') && dots <= 1 && s.parse::<f64>().is_ok() {
+    if !t.is_empty()
+        && t.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        && dots <= 1
+        && s.parse::<f64>().is_ok()
+    {
         if s.contains('.') {
             return Value::Float(s.parse::<f64>().unwrap());
         }
@@ -523,30 +511,35 @@ fn parse_hex_elements(mut rest: &[u8]) -> Result<Content> {
         let lead = rest[0];
         match lead {
             LEAD_TT => {
-                // 规约形式 F0+F0+5B; 兼容省略定义字节的 F0+5B (BCD 数据首字节不可能是 F0, 探测无歧义)
                 let has_def = rest.len() >= 2 && rest[1] == LEAD_TT;
                 let need = if has_def { 7 } else { 6 };
                 if rest.len() < need {
                     return Err(Error::TooShort { need, have: rest.len() });
                 }
-                obs_time = if has_def { parse_bcd_time(&rest[2..7]) } else { parse_bcd_time(&rest[1..6]) };
+                obs_time = if has_def {
+                    parse_bcd_time(&rest[2..7])
+                } else {
+                    parse_bcd_time(&rest[1..6])
+                };
                 rest = &rest[need..];
             }
             LEAD_ST => {
                 let has_def = rest.len() >= 2 && rest[1] == LEAD_ST;
                 let need = if has_def { 7 } else { 6 };
                 if rest.len() < need {
-                    return Err(Error::TooShort { need: 6, have: rest.len() });
+                    return Err(Error::TooShort { need, have: rest.len() });
                 }
-                station_addr =
-                    crate::frame::station_to_string(if has_def { &rest[2..7] } else { &rest[1..6] }).ok();
+                station_addr = crate::frame::station_to_string(if has_def {
+                    &rest[2..7]
+                } else {
+                    &rest[1..6]
+                })
+                .ok();
                 rest = &rest[need..];
-                // 站址与分类码固定组合: 分类码单字节紧随其后
                 if let Some(&c) = rest.first() {
                     if let Some(ch) = crate::class_hex_to_char(c) {
                         station_class = Some(ch);
                         rest = &rest[1..];
-                        // 兼容个别设备分类码后跟 00 定义字节的形式
                         if rest.first() == Some(&0x00) {
                             rest = &rest[1..];
                         }
@@ -554,7 +547,6 @@ fn parse_hex_elements(mut rest: &[u8]) -> Result<Content> {
                 }
             }
             LEAD_RGZS | LEAD_PIC | LEAD_DATA => {
-                // 定义字节固定 F2/F3/F6 (表C.1 注c/d/f); 兼容省略形式
                 let fixed_def = match lead {
                     LEAD_RGZS => 0xF2,
                     LEAD_PIC => 0xF3,
@@ -597,7 +589,6 @@ fn parse_hex_elements(mut rest: &[u8]) -> Result<Content> {
                 rest = &rest[26..];
             }
             LEAD_STEP => {
-                // 时间步长码: 04H + 18H + dhm
                 if rest.len() < 5 {
                     return Err(Error::TooShort { need: 5, have: rest.len() });
                 }
@@ -612,7 +603,6 @@ fn parse_hex_elements(mut rest: &[u8]) -> Result<Content> {
                 rest = &rest[6..];
             }
             0xFF => {
-                // 用户自定义扩展: FF + 1 扩展字节 + 数据定义
                 if rest.len() < 3 {
                     return Err(Error::TooShort { need: 3, have: rest.len() });
                 }
@@ -628,7 +618,6 @@ fn parse_hex_elements(mut rest: &[u8]) -> Result<Content> {
                 }
                 let def = rest[1];
                 if def == 0 {
-                    // 分类码 (附录A 引导符, 数据定义 0, 无数据)
                     if let Some(c) = crate::class_hex_to_char(lead) {
                         station_class = Some(c);
                         rest = &rest[2..];
@@ -653,21 +642,31 @@ fn parse_hex_elements(mut rest: &[u8]) -> Result<Content> {
     }))
 }
 
-/// 数据定义字节: 高5位=数据字节数(不含符号字节), 低3位=小数位数。
-/// 负数: 数据首字节 FF 后跟 BCD 数字 (§6.6.3.3)。
+/// 数据定义字节: 高5位=数据字节数(包含负数符号位), 低3位=小数位数。
+/// BCD 数据全 F 表示缺测；负数的最高位字节为 FF，但符号字节已计入数据定义长度 (§6.6.3.3)。
 fn parse_def_data(def: u8, data: &[u8]) -> Result<(Value, usize)> {
     let nbytes = (def >> 3) as usize;
     let decimals = (def & 0x07) as u32;
     if data.len() < nbytes {
         return Err(Error::TooShort { need: nbytes, have: data.len() });
     }
-    let (neg, digits_bytes, consumed) = if nbytes > 0 && data[0] == 0xFF {
-        (true, &data[1..1 + nbytes], nbytes + 1)
+
+    let field = &data[..nbytes];
+    if nbytes > 0 && field.iter().all(|&b| b == 0xFF) {
+        return Ok((Value::Missing, nbytes));
+    }
+
+    let (neg, digits_bytes) = if nbytes > 0 && field[0] == 0xFF {
+        (true, &field[1..])
     } else {
-        (false, &data[..nbytes], nbytes)
+        (false, field)
     };
     let digits = bcd_to_digits(digits_bytes).unwrap_or_default();
-    let mag: f64 = if digits.is_empty() { 0.0 } else { digits.parse::<f64>().unwrap_or(0.0) };
+    let mag: f64 = if digits.is_empty() {
+        0.0
+    } else {
+        digits.parse::<f64>().unwrap_or(0.0)
+    };
     let v = if decimals == 0 {
         let i = mag as i64;
         Value::Int(if neg { -i } else { i })
@@ -675,7 +674,7 @@ fn parse_def_data(def: u8, data: &[u8]) -> Result<(Value, usize)> {
         let f = mag / 10f64.powi(decimals as i32);
         Value::Float(if neg { -f } else { f })
     };
-    Ok((v, consumed))
+    Ok((v, nbytes))
 }
 
 #[cfg(test)]
@@ -684,6 +683,12 @@ mod tests {
 
     fn body(s: &str) -> Vec<u8> {
         s.as_bytes().to_vec()
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        s.split_whitespace()
+            .map(|pair| u8::from_str_radix(pair, 16).unwrap())
+            .collect()
     }
 
     #[test]
@@ -711,7 +716,6 @@ mod tests {
 
     #[test]
     fn add_report_with_zt_and_missing() {
-        // ZT=00000018 (BIT3|BIT4), Q 缺测
         let raw = "0002260910031500ST 5010123456 H TT 2609100315 Z 7.123 Q M ZT 00000018 VT 11.80 ";
         let b = parse_body(0x33, &body(raw), Encoding::Ascii).unwrap();
         let Content::Elements(e) = &b.content else { panic!() };
@@ -723,7 +727,6 @@ mod tests {
 
     #[test]
     fn hourly_report() {
-        // DRP 12字节: 01..0C; DRZ1 12值: 0064,0065,0066,0067,0068,FFFF,0069,006A,006B,006C,006D,006E
         let raw = "0003260909090000ST 5010123456 H TT 2609090900 DRP 0102030405060708090A0B0C PT 12.5 DRZ1 00640065006600670068FFFF0069006A006B006C006D006E VT 12.00 ";
         let b = parse_body(0x34, &body(raw), Encoding::Ascii).unwrap();
         let Content::Elements(e) = &b.content else { panic!() };
@@ -740,8 +743,8 @@ mod tests {
         match &e.elements[2].value {
             Value::HourlyLevel(v) => {
                 assert_eq!(v.len(), 12);
-                assert_eq!(v[0], Some(1.0)); // 0x0064 cm -> 1.00 m
-                assert_eq!(v[5], None); // FFFF 非法
+                assert_eq!(v[0], Some(1.0));
+                assert_eq!(v[5], None);
             }
             _ => panic!(),
         }
@@ -750,7 +753,6 @@ mod tests {
 
     #[test]
     fn uniform_report() {
-        // DRN05, 要素 Z Q, 两组数据 (表30: 时间优先, 组内按要素次序)
         let raw = "0004260909080000ST 5010123456 H TT 2609090800 DRN05 Z Q 6.30 12.5 6.35 12.6 ";
         let b = parse_body(0x31, &body(raw), Encoding::Ascii).unwrap();
         let Content::Uniform(u) = &b.content else { panic!() };
@@ -797,12 +799,6 @@ mod tests {
 
     #[test]
     fn hex_body_elements() {
-        // 流水号 0001 + 发报时间 260909080000
-        // ST: F1 + 50 10 12 34 56
-        // 分类码: 48 (河道) def 00
-        // TT: F0 + 26 09 09 08 00
-        // Z (N(7,3), 4位数字 6380): 39 + def((2<<3)|3=0x13) + 63 80
-        // VT (N(4,2), 4位数字 1250): 38 + def((2<<3)|2=0x12) + 12 50
         let mut raw = vec![0x00, 0x01, 0x26, 0x09, 0x09, 0x08, 0x00, 0x00];
         raw.extend_from_slice(&[0xF1, 0x50, 0x10, 0x12, 0x34, 0x56]);
         raw.extend_from_slice(&[0x48, 0x00]);
@@ -823,21 +819,55 @@ mod tests {
 
     #[test]
     fn hex_negative_value() {
-        // Z 值 -1.23: FF + 0123 (4位数字, 2位小数), def = (2<<3)|2 = 0x12
+        // 数据定义中的字节数包含符号字节: FF + 0123 共 3 字节, 小数位 2 -> 0x1A。
         let mut raw = vec![0x00, 0x02, 0x26, 0x09, 0x09, 0x08, 0x00, 0x00];
-        raw.extend_from_slice(&[0x39, 0x12, 0xFF, 0x01, 0x23]);
+        raw.extend_from_slice(&[0x39, 0x1A, 0xFF, 0x01, 0x23]);
         let b = parse_body(0x32, &raw, Encoding::Hex).unwrap();
         let Content::Elements(e) = &b.content else { panic!() };
         assert_eq!(e.elements[0].value, Value::Float(-1.23));
     }
 
     #[test]
+    fn hex_real_hourly_missing_value_does_not_shift_following_fields() {
+        // 现场 34H 正文。Z=FFFFFFFF 为缺测，之后 VT / 7A / FFA0 必须保持字段边界。
+        let raw = hex(
+            "01 50 26 09 10 17 00 45 \
+             F1 F1 00 26 09 08 01 48 \
+             F0 F0 26 09 10 16 05 \
+             F4 60 FF FF FF FF FF FF FF FF FF 00 00 00 \
+             F0 F0 26 09 10 17 00 26 19 00 00 15 \
+             F0 F0 26 09 10 16 05 \
+             F5 C0 FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF \
+             F0 F0 26 09 10 17 00 \
+             1A 19 00 00 00 \
+             20 19 00 00 00 \
+             39 23 FF FF FF FF \
+             38 12 12 07 \
+             7A 08 31 \
+             FF A0 11 03 07",
+        );
+        assert_eq!(raw.len(), 117);
+
+        let b = parse_body(0x34, &raw, Encoding::Hex).unwrap();
+        let Content::Elements(e) = &b.content else { panic!() };
+        assert_eq!(e.station_addr.as_deref(), Some("0026090801"));
+        assert_eq!(e.station_class, Some('H'));
+        assert_eq!(e.elements.len(), 9);
+        assert_eq!(e.elements[5].ident, "Z");
+        assert_eq!(e.elements[5].value, Value::Missing);
+        assert_eq!(e.elements[6].ident, "VT");
+        assert_eq!(e.elements[6].value, Value::Float(12.07));
+        assert_eq!(e.elements[7].ident, "7A");
+        assert_eq!(e.elements[7].value, Value::Int(31));
+        assert_eq!(e.elements[8].ident, "FFA0");
+        assert_eq!(e.elements[8].value, Value::Float(30.7));
+    }
+
+    #[test]
     fn hex_zt_and_rain() {
         let mut raw = vec![0x00, 0x03, 0x26, 0x09, 0x09, 0x09, 0x00, 0x00];
         raw.extend_from_slice(&[0xF0, 0x26, 0x09, 0x09, 0x09, 0x00]);
-        // DRP: F4 + def(12字节=0x60) + 12字节
         raw.extend_from_slice(&[0xF4, 0x60, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-        // ZT: 45 + def((4<<3)|0=0x20) + 00000018
         raw.extend_from_slice(&[0x45, 0x20, 0x00, 0x00, 0x00, 0x18]);
         let b = parse_body(0x34, &raw, Encoding::Hex).unwrap();
         let Content::Elements(e) = &b.content else { panic!() };
@@ -851,7 +881,6 @@ mod tests {
 
     #[test]
     fn no_station_group() {
-        // 无 ST 组的直接要素 (部分设备简写)
         let raw = "0007260909080000TT 2609090800 Z 6.38 ";
         let b = parse_body(0x32, &body(raw), Encoding::Ascii).unwrap();
         let Content::Elements(e) = &b.content else { panic!() };
