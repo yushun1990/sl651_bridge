@@ -1,0 +1,22 @@
+[Unit]
+Description=SL651-2014 hydrological telemetry to ThingsBoard MQTT bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sl651
+Group=sl651
+ExecStart=/usr/local/bin/sl651-bridge --config /etc/sl651-bridge/bridge.toml
+Restart=always
+RestartSec=5
+# 图片落盘目录
+StateDirectory=sl651-bridge
+Environment=RUST_LOG=info
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sl651-bridge
+
+[Install]
+WantedBy=multi-user.target

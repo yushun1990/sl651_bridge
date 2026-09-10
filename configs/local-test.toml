@@ -1,0 +1,29 @@
+# 本地接入验证配置: 不连接 ThingsBoard, 上行载荷仅打印日志
+# 用法: target/release/sl651-bridge --config configs/local-test.toml
+
+[listen]
+tcp = "0.0.0.0:9000"
+udp = "0.0.0.0:9000"
+
+[center]
+address = 1
+
+[ack]
+enabled = true
+final_terminator = "EOT"
+
+# 站点别名 (可选; 不配则设备名=上报站码原样)
+[stations]
+"0100000001" = { name = "样机1" }
+
+[tb]
+# log 模式: 不建立 MQTT 连接, 每条上行载荷以 [TB-LOG] 打印
+mode = "log"
+
+[images]
+enabled = true
+dir = "./local-images"
+
+[log]
+level = "info"
+format = "pretty"

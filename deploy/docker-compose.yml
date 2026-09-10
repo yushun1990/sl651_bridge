@@ -1,0 +1,22 @@
+services:
+  sl651-bridge:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    command: ["--config", "/etc/sl651-bridge/bridge.toml"]
+    ports:
+      - "9000:9000"       # SL651 TCP (遥测站接入)
+      - "9000:9000/udp"   # SL651 UDP
+    volumes:
+      - ./bridge.toml:/etc/sl651-bridge/bridge.toml:ro
+      - sl651-images:/var/lib/sl651-bridge/images
+    environment:
+      # 可选: 环境变量覆盖配置中的 TB 连接
+      - SL651_TB_HOST=thingsboard.example.com
+      - SL651_TB_PORT=1883
+      - SL651_TB_USERNAME=${TB_MQTT_USERNAME}
+      - SL651_TB_PASSWORD=${TB_MQTT_PASSWORD}
+
+volumes:
+  sl651-images:

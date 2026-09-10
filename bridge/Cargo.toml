@@ -1,0 +1,23 @@
+[package]
+name = "sl651-bridge"
+description = "SL651-2014 遥测站接入网关, 中转上报 ThingsBoard MQTT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sl651-protocol = { path = "../protocol" }
+chrono.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+rumqttc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dashmap.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
