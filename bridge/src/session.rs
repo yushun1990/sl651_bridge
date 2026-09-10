@@ -138,7 +138,21 @@ impl Sessions {
         let body = match parse_body(func, &frame.body, frame.encoding) {
             Ok(b) => b,
             Err(e) => {
-                warn!(station = %station_name, func = format!("{func:02X}"), "正文解析失败: {e}");
+                let raw_body_hex = frame
+                    .body
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                warn!(
+                    station = %station_name,
+                    func = format!("{func:02X}"),
+                    encoding = ?frame.encoding,
+                    body_len = frame.body.len(),
+                    transport = remote,
+                    raw_body_hex = %raw_body_hex,
+                    "正文解析失败: {e}"
+                );
                 return None;
             }
         };
